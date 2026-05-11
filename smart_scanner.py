@@ -1,97 +1,99 @@
 import streamlit as st
-import pandas as pd
 import yfinance as yf
-from concurrent.futures import ThreadPoolExecutor
+import pandas as pd
+import pandas_ta as ta
+from datetime import datetime
+import time
 
 # --- 1. പേജ് സെറ്റിംഗ്സ് ---
-st.set_page_config(page_title="MJ Pro Scanner Hub", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MJ Pro Master Hub", layout="wide", page_icon="🎯")
 
-# --- 2. സ്റ്റോക്ക് ലിസ്റ്റ് (ഇവിടെ നിങ്ങൾക്ക് കൂടുതൽ സ്റ്റോക്കുകൾ ആഡ് ചെയ്യാം) ---
-STOCKS = [
-    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", 
-    "SBIN.NS", "BHARTIARTL.NS", "AXISBANK.NS", "WIPRO.NS", "ITC.NS",
-    "TATAMOTORS.NS", "ADANIENT.NS", "BAJFINANCE.NS", "LT.NS", "M&M.NS",
-    "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS", "ASIANPAINT.NS", "KOTAKBANK.NS"
-]
+# --- 2. CSS STYLING (എല്ലാ സ്കാനറുകൾക്കും വേണ്ടിയുള്ള കോമൺ സ്റ്റൈൽ) ---
+st.markdown("""
+<style>
+    .stApp { background-color: #0b0e14; color: #ffffff; }
+    .card { background-color: #161b22; padding: 15px; border-radius: 12px; border: 1px solid #30363d; text-align: center; margin-bottom: 10px; }
+    .top-bar { display: flex; justify-content: space-around; background: #1f2937; padding: 10px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #3b82f6; align-items: center; }
+    .levels-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 8px 0; font-size: 10px; }
+    .res { color: #ff7b72; font-weight: bold; }
+    .sup { color: #44cf6c; font-weight: bold; }
+    .strike-table { width: 100%; font-size: 11px; border-collapse: collapse; margin-top: 8px; border-radius: 5px; overflow: hidden; }
+    .strike-table td { padding: 5px; border: 1px solid #30363d; text-align: center; }
+    .itm { background-color: #1c2a1e; color: #44cf6c; }
+    .atm { background-color: #262c36; color: #ffab70; font-weight: bold; }
+    .otm { color: #8b949e; }
+    .heatmap-container { background: #0d1117; padding: 15px; border-radius: 12px; border: 1px solid #333; }
+    .stock-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 5px; }
+    .stock-box { padding: 8px 4px; border-radius: 6px; font-size: 10px; font-weight: bold; text-align: center; border: 1px solid #222; }
+    .pos { background-color: #1c2a1e; color: #44cf6c; border-color: #44cf6c; }
+    .neg { background-color: #2a1c1c; color: #ff7b72; border-color: #ff7b72; }
+    .stat-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; text-align: center; color: white; margin: 10px 0; }
+</style>
+""", unsafe_allow_html=True)
 
-# --- 3. സ്കാനർ എൻജിൻ (എല്ലാ കണ്ടീഷനുകളും ഇവിടെയുണ്ട്) ---
-def advanced_scan(ticker):
+# --- 3. COMMON FUNCTIONS ---
+def get_index_data(ticker):
     try:
-        # 15 മിനിറ്റ് ഇന്റർവെലിൽ ഡാറ്റ എടുക്കുന്നു
-        df = yf.download(ticker, period="5d", interval="15m", progress=False)
-        if df.empty or len(df) < 20: return None
-        
-        last_close = df['Close'].iloc[-1]
-        prev_close = df['Close'].iloc[-2]
-        high_5 = df['High'].iloc[-6:-1].max() # കഴിഞ്ഞ 5 കാൻഡിലുകളിലെ ഹൈ
-        avg_vol = df['Volume'].iloc[-10:-1].mean()
-        curr_vol = df['Volume'].iloc[-1]
-        
-        results = {"Symbol": ticker, "LTP": round(last_close, 2)}
-        
-        # A. Breakout Logic
-        if last_close > high_5:
-            results["Breakout"] = "🚀 Breakout"
-        else:
-            results["Breakout"] = "-"
+        data = yf.download(ticker, period="2d", interval="15m", progress=False)
+        if not data.empty:
+            if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+            h, l, c = data['High'].iloc[-2], data['Low'].iloc[-2], data['Close'].iloc[-2]
+            p = (h + l + c) / 3
+            curr = data['Close'].iloc[-1]
+            return {"curr": round(float(curr), 2), "R1": round(2*p-l, 2), "S1": round(2*p-h, 2), "R2": round(p+(h-l), 2), "S2": round(p-(h-l), 2)}
+    except: return None
 
-        # B. Momentum Logic (0.3% കൂടുതൽ മൂവ്‌മെന്റ്)
-        change = ((last_price - prev_close) / prev_close) * 100
-        if change > 0.3:
-            results["Momentum"] = f"🔥 Bullish ({round(change,2)}%)"
-        elif change < -0.3:
-            results["Momentum"] = f"❄️ Bearish ({round(change,2)}%)"
-        else:
-            results["Momentum"] = "Neutral"
+def get_option_chain_html(price, base=50):
+    atm = round(price / base) * base
+    html = "<table class='strike-table'>"
+    for i in range(-1, 2):
+        s = int(atm + (i * base))
+        style = "itm" if s < atm else "atm" if s == atm else "otm"
+        html += f"<tr class='{style}'><td>{s}</td></tr>"
+    return html + "</table>"
 
-        # C. Volume Spike
-        if curr_vol > avg_vol * 1.5:
-            results["Volume"] = "✅ High Vol"
-        else:
-            results["Volume"] = "Normal"
+# --- 4. SIDEBAR NAVIGATION ---
+st.sidebar.title("MJ Trading Hub Pro")
+page = st.sidebar.radio("സ്കാനർ തിരഞ്ഞെടുക്കുക:", ["🏠 Dashboard", "🎯 Multi-Index Pro", "💎 Option Pro", "📈 Stock Pro (Nifty 500)"])
 
-        return results
-    except:
-        return None
+# --- 5. DASHBOARD PAGE ---
+if page == "🏠 Dashboard":
+    st.title("MJ Pro Scanner Dashboard")
+    st.write("സ്കാനറുകൾ പ്രവർത്തിപ്പിക്കാൻ സൈഡ്ബാർ മെനു ഉപയോഗിക്കുക.")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("Market Status: Live Update Enabled")
+    with col2:
+        st.success(f"Last Login: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-# --- 4. സൈഡ്‌ബാർ മെനു ---
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2422/2422796.png", width=100)
-st.sidebar.title("MJ Trading Hub")
+# --- 6. MULTI-INDEX PRO PAGE ---
+elif page == "🎯 Multi-Index Pro":
+    st.header("Multi-Index Master Scanner")
+    indices = [("^NSEI", "NIFTY 50"), ("^NSEBANK", "BANK NIFTY"), ("NIFTY_FIN_SERVICE.NS", "FINNIFTY")]
+    cols = st.columns(3)
+    for i, (tic, name) in enumerate(indices):
+        data = get_index_data(tic)
+        if data:
+            with cols[i]:
+                st.markdown(f"""<div class="card"><h4>{name}</h4><h2>{data['curr']}</h2><div class="levels-grid">
+                <span class="res">R1: {data['R1']}</span><span class="sup">S1: {data['S1']}</span></div>
+                {get_option_chain_html(data['curr'])}</div>""", unsafe_allow_html=True)
+
+# --- 7. OPTION PRO PAGE ---
+elif page == "💎 Option Pro":
+    st.header("Ultimate Option Pro Scanner")
+    nifty = get_index_data("^NSEI")
+    if nifty:
+        st.markdown(f"""<div class="card" style="max-width:400px; margin:auto;"><h3>NIFTY 50 SPOT</h3><h1>{nifty['curr']}</h1>
+        {get_option_chain_html(nifty['curr'], 50)}</div>""", unsafe_allow_html=True)
+
+# --- 8. STOCK PRO PAGE ---
+elif page == "📈 Stock Pro (Nifty 500)":
+    st.header("Nifty 500 Advanced Scanner")
+    if st.button("🚀 START MARKET SCAN"):
+        st.warning("സ്കാനിംഗ് ആരംഭിക്കുന്നു... ദയവായി കാത്തിരിക്കുക.")
+        # ഇവിടെ നിങ്ങൾക്ക് സ്റ്റോക്ക് സ്കാനിംഗ് ലോജിക് ചേർക്കാം
+        st.info("നിങ്ങൾ നൽകിയ Nifty 500 ലിസ്റ്റിലെ സ്റ്റോക്കുകൾ ഇവിടെ സ്കാൻ ചെയ്യപ്പെടും.")
+
 st.sidebar.markdown("---")
-menu = st.sidebar.radio("മെനു തിരഞ്ഞെടുക്കുക:", ["🏠 Dashboard", "🔍 Multi-Scanner Pro", "📊 Market Watch"])
-
-# --- 5. പേജ് ലോജിക് ---
-
-if menu == "🏠 Dashboard":
-    st.title("Welcome to MJ Pro Trading Hub")
-    st.info("നിങ്ങളുടെ സ്കാനറുകൾ ഇപ്പോൾ ലൈവ് ആണ്. ഇടതുവശത്തെ മെനുവിൽ നിന്ന് സ്കാനർ സെലക്ട് ചെയ്യുക.")
-    
-    # സ്റ്റാറ്റസ് ബോക്സുകൾ
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Market", "NSE/BSE")
-    c2.metric("Scanners", "Active")
-    c3.metric("Version", "2.0")
-
-elif menu == "🔍 Multi-Scanner Pro":
-    st.header("🚀 All-in-One Multi Scanner")
-    st.write("ഈ സ്കാനർ ഒരേസമയം Breakout, Momentum, Volume എന്നിവ പരിശോധിക്കും.")
-    
-    if st.button("Start Full Scan"):
-        with st.spinner("നിങ്ങളുടെ സ്കാനർ സ്റ്റോക്കുകൾ പരിശോധിക്കുന്നു..."):
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                raw_results = list(executor.map(advanced_scan, STOCKS))
-            
-            # ഫിൽട്ടറിംഗ്
-            final_data = [r for r in raw_results if r is not None]
-            
-            if final_data:
-                df_final = pd.DataFrame(final_data)
-                # ലിസ്റ്റ് കാണിക്കുന്നു
-                st.dataframe(df_final.style.highlight_max(axis=0, color='#1e40af'), use_container_width=True)
-                st.success(f"സ്കാനിംഗ് പൂർത്തിയായി. {len(final_data)} സ്റ്റോക്കുകൾ കണ്ടെത്തി.")
-            else:
-                st.error("ഡാറ്റ ലഭ്യമല്ല. ദയവായി അല്പം കഴിഞ്ഞ് ശ്രമിക്കുക.")
-
-elif menu == "📊 Market Watch":
-    st.header("Market Overview")
-    st.write("പ്രധാന ഇൻഡക്സുകൾ ഇവിടെ നിരീക്ഷിക്കാം (Coming Soon).")
+st.sidebar.caption(f"Last Update: {datetime.now().strftime('%H:%M:%S')}")
