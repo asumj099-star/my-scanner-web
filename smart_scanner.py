@@ -2,61 +2,58 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 # --- 1. പേജ് സെറ്റിംഗ്സ് ---
-st.set_page_config(page_title="MJ Pro Trading Hub", layout="wide")
+st.set_page_config(page_title="MJ Trading Hub Scanner", layout="wide")
 
-# --- 2. സ്റ്റൈലിംഗ് (CSS) ---
-st.markdown("""
-<style>
-    .main-header {text-align: center; color: #1E88E5; padding: 10px;}
-    .stButton>button {width: 100%; border-radius: 5px; height: 3em; background-color: #1E88E5; color: white;}
-</style>
-""", unsafe_allow_html=True)
+# --- 2. സ്റ്റോക്ക് ലിസ്റ്റ് (നിങ്ങളുടെ താല്പര്യപ്രകാരം മാറ്റാം) ---
+NIFTY50_TICKERS = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "BHARTIARTL.NS"]
 
-# --- 3. സൈഡ്‌ബാർ മെനു ---
+# --- 3. സ്കാനർ ലോജിക് ഫംഗ്ഷനുകൾ ---
+
+def analyze_stock(ticker):
+    """ഒരു സ്റ്റോക്ക് അനലൈസ് ചെയ്യാനുള്ള ലോജിക്"""
+    try:
+        data = yf.download(ticker, period="5d", interval="15m", progress=False)
+        if data.empty: return None
+        
+        last_close = data['Close'].iloc[-1]
+        prev_close = data['Close'].iloc[-2]
+        
+        # ഉദാഹരണത്തിന് ഒരു സിമ്പിൾ ബ്രേക്ക്ഔട്ട് കണ്ടീഷൻ
+        if last_close > prev_close * 1.01: # 1% കയറിയാൽ
+            return {"Ticker": ticker, "LTP": round(last_close, 2), "Change": "Breakout"}
+        return None
+    except:
+        return None
+
+# --- 4. സൈഡ്‌ബാർ മെനു ---
 st.sidebar.title("📈 MJ Pro Scanner")
-st.sidebar.subheader("Main Menu")
-choice = st.sidebar.radio("സ്കാനർ തിരഞ്ഞെടുക്കുക:", 
-    ["Dashboard", "Breakout Scanner", "Momentum Scanner", "Volume Scanner"])
-
-# --- 4. സ്കാനർ ഫംഗ്ഷനുകൾ (ഓരോ സ്കാനർ ലോജിക്കും ഇവിടെ വരും) ---
-
-def breakout_scanner():
-    st.header("🚀 Breakout Scanner Pro")
-    # ഇവിടെ നിങ്ങളുടെ ഒന്നാമത്തെ സ്കാനറിന്റെ കോഡ് (analyze_stock) ചേർക്കാം
-    st.info("ബ്ലാക്ക്ഔട്ട് സ്റ്റോക്കുകൾ ഇവിടെ ലഭ്യമാകും.")
-    # (നിങ്ങൾ മുകളിൽ നൽകിയ കോഡ് ഇവിടെയാണ് ഇൻസ്റ്റാൾ ചെയ്യുക)
-
-def momentum_scanner():
-    st.header("🔥 Momentum Scanner")
-    st.info("മൊമെന്റം സ്റ്റോക്കുകൾ ഇവിടെ ലഭ്യമാകും.")
-
-def volume_scanner():
-    st.header("📊 Volume Scanner")
-    st.info("ഹൈ വോളിയം സ്റ്റോക്കുകൾ ഇവിടെ ലഭ്യമാകും.")
+choice = st.sidebar.radio("സ്കാനർ തിരഞ്ഞെടുക്കുക:", ["Home", "Breakout Scanner", "Momentum Scanner"])
 
 # --- 5. പേജ് ഡിസ്‌പ്ലേ ലോജിക് ---
 
-if choice == "Dashboard":
-    st.markdown("<h1 class='main-header'>MJ Trading Hub Dashboard</h1>", unsafe_allow_html=True)
-    st.write("സ്വാഗതം! നിങ്ങളുടെ എല്ലാ സ്കാനറുകളും ഇടതുവശത്തെ മെനുവിൽ ലഭ്യമാണ്.")
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Market Status", "Live")
-    col2.metric("Scanners", "3 Active")
-    col3.metric("Updates", "Real-time")
+if choice == "Home":
+    st.title("Welcome to MJ Trading Hub")
+    st.write("ഇടതുവശത്തുള്ള മെനുവിൽ നിന്ന് സ്കാനർ സെലക്ട് ചെയ്യുക.")
 
 elif choice == "Breakout Scanner":
-    breakout_scanner()
+    st.header("🚀 Breakout Scanner Pro")
+    
+    if st.button("Scan Now"):
+        with st.spinner("സ്റ്റോക്കുകൾ സ്കാൻ ചെയ്യുന്നു..."):
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                results = list(executor.map(analyze_stock, NIFTY50_TICKERS))
+            
+            # ഫിൽട്ടർ ചെയ്ത റിസൾട്ടുകൾ കാണിക്കുന്നു
+            final_list = [r for r in results if r is not None]
+            
+            if final_list:
+                df = pd.DataFrame(final_list)
+                st.table(df) # ഇവിടെയാണ് ടേബിൾ രൂപത്തിൽ റിസൾട്ട് വരുന്നത്
+            else:
+                st.warning("നിലവിൽ ബ്രേക്ക്ഔട്ട് കണ്ടീഷനിൽ സ്റ്റോക്കുകൾ ഒന്നുമില്ല.")
 
 elif choice == "Momentum Scanner":
-    momentum_scanner()
-
-elif choice == "Volume Scanner":
-    volume_scanner()
-
-# താഴെ ഒരു ഫൂട്ടർ മെസ്സേജ്
-st.sidebar.markdown("---")
-st.sidebar.write("Developed by MJ Trading Hub")
+    st.header("🔥 Momentum Scanner")
+    st.write("മൊമെന്റം സ്കാനർ റിസൾട്ടുകൾ ഇവിടെ വരും.")
