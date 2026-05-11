@@ -4,3 +4,7 @@ yfinance
 streamlit-autorefresh
 gspread
 google-auth
+streamlit
+pandas
+yfinance
+pandas_ta
